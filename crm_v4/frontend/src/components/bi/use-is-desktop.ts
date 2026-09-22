@@ -1,20 +1,21 @@
 'use client'
 
-import { useSyncExternalStore } from 'react'
+import { useMemo, useSyncExternalStore } from 'react'
 
-const DESKTOP = '(min-width: 768px)' // Tailwind `md`
+export const MD_WIDTH = 768 // Tailwind `md`
+export const LG_WIDTH = 1024 // Tailwind `lg`
 
-const subscribe = (onChange: () => void) => {
+const subscribe = (minWidth: number) => (onChange: () => void) => {
   if (typeof window.matchMedia !== 'function') return () => undefined
-  const query = window.matchMedia(DESKTOP)
+  const query = window.matchMedia(`(min-width: ${minWidth}px)`)
   query.addEventListener('change', onChange)
   return () => query.removeEventListener('change', onChange)
 }
 
-/** True from the `md` breakpoint up; environments without matchMedia count as desktop. */
-export const useIsDesktop = () =>
+/** True from `minWidth` (default `md`) up; environments without matchMedia count as desktop. */
+export const useIsDesktop = (minWidth = MD_WIDTH) =>
   useSyncExternalStore(
-    subscribe,
-    () => typeof window.matchMedia !== 'function' || window.matchMedia(DESKTOP).matches,
+    useMemo(() => subscribe(minWidth), [minWidth]),
+    () => typeof window.matchMedia !== 'function' || window.matchMedia(`(min-width: ${minWidth}px)`).matches,
     () => true,
   )

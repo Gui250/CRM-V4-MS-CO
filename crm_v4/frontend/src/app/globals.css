@@ -1,0 +1,66 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-brand: #e30613;
+  --color-brand-dark: #b80510;
+  --color-ink: #141414;
+  --color-paper: #ffffff;
+  --color-mist: #f2f2f1;
+  --color-line: #e3e3e1;
+  --color-muted: #686868;
+
+  /* Pipeline stage colors: a soft background and an AA text color each (contrast.test.ts). */
+  --color-stage-gray-bg: #ececeb;
+  --color-stage-gray: #3f3f3f;
+  --color-stage-red-bg: #fde2e3;
+  --color-stage-red: #9b0a12;
+  --color-stage-orange-bg: #fde9d9;
+  --color-stage-orange: #8a3a06;
+  --color-stage-amber-bg: #fbf0cc;
+  --color-stage-amber: #6e4d00;
+  --color-stage-green-bg: #dff3e4;
+  --color-stage-green: #1d6433;
+  --color-stage-teal-bg: #d8f1ef;
+  --color-stage-teal: #0f5d58;
+  --color-stage-blue-bg: #e0eafc;
+  --color-stage-blue: #1e4a9e;
+  --color-stage-violet-bg: #ece4fb;
+  --color-stage-violet: #5b33a3;
+
+  --font-display: var(--font-archivo), system-ui, sans-serif;
+  --font-sans: var(--font-instrument), system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+
+  --radius-sm: 1px;
+  --radius: 2px;
+  --radius-md: 2px;
+  --radius-lg: 2px;
+}
+
+/* The V4 logo's signature: a 45° cut on one corner. */
+@utility cut-corner {
+  clip-path: polygon(0 0, calc(100% - var(--cut, 14px)) 0, 100% var(--cut, 14px), 100% 100%, 0 100%);
+}
+@utility cut-corner-bl {
+  clip-path: polygon(0 0, 100% 0, 100% 100%, var(--cut, 10px) 100%, 0 calc(100% - var(--cut, 10px)));
+}
+
+@layer base {
+  html {
+    color: var(--color-ink);
+    background: var(--color-paper);
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}

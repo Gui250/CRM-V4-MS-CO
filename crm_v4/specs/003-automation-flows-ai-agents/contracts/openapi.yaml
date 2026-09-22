@@ -1,0 +1,616 @@
+openapi: 3.1.0
+info:
+  title: V4 Company MS&CO CRM API (automações e agentes de IA)
+  version: 0.2.0
+  description: >
+    Acréscimos da feature 003 à API da feature 001
+    (specs/001-whatsapp-chat-panel/contracts/openapi.yaml). Mesma autenticação por cookie
+    `v4_session`, mesmo formato de erro `{ code, message }`. Rotas marcadas "admin" respondem 403
+    para atendentes (FR-029). `Error`, `Conversation`, `Contact` e `Message` referenciam os schemas
+    da feature 001, ampliados aqui em `components`.
+servers:
+  - url: /api
+security:
+  - session: []
+
+paths:
+  # ---------- Provedores de IA (admin) ----------
+  /ai-providers:
+    get:
+      summary: (admin) Lista provedores cadastrados. A chave nunca é devolvida, só keyHint.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/AiProvider' } }
+    post:
+      summary: (admin) Cadastra provedor. Testa a conexão antes de gravar (FR-015).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, vendor, apiKey]
+              properties:
+                name: { type: string, minLength: 2, maxLength: 60 }
+                vendor: { $ref: '#/components/schemas/AiVendor' }
+                apiKey: { type: string, minLength: 10, maxLength: 500 }
+      responses:
+        '201': { description: Criado, content: { application/json: { schema: { $ref: '#/components/schemas/AiProvider' } } } }
+        '409': { description: Nome já usado, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { description: 'Validação ou conexão falhou (code AI_PROVIDER_TEST_FAILED)', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /ai-providers/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    patch:
+      summary: (admin) Renomeia e/ou troca a chave (troca testa de novo).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: { type: string, minLength: 2, maxLength: 60 }
+                apiKey: { type: string, minLength: 10, maxLength: 500 }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AiProvider' } } } }
+        '404': { description: Não encontrado, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { description: Validação ou conexão falhou, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    delete:
+      summary: (admin) Exclui. 409 PROVIDER_IN_USE lista os agentes que usam o provedor.
+      responses:
+        '204': { description: Excluído }
+        '409': { description: Em uso, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /ai-providers/{id}/test:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      summary: (admin) Testa de novo a conexão e atualiza availableModels.
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AiProvider' } } } }
+        '422': { description: Falhou, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  # ---------- Agentes (admin) ----------
+  /ai-agents:
+    get:
+      summary: (admin) Lista agentes.
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AiAgent' } } } } }
+    post:
+      summary: (admin) Cria agente.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/AiAgentInput' } } }
+      responses:
+        '201': { description: Criado, content: { application/json: { schema: { $ref: '#/components/schemas/AiAgent' } } } }
+        '409': { description: Nome já usado, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { description: 'Validação (ex.: modelo fora de availableModels)', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /ai-agents/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    patch:
+      summary: (admin) Edita campos, inclusive isActive (ativar/desativar, FR-016/FR-018).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              description: Qualquer subconjunto dos campos de AiAgentInput, mais isActive.
+              properties:
+                name: { type: string, minLength: 2, maxLength: 60 }
+                providerId: { type: string, format: uuid }
+                model: { type: string, minLength: 1, maxLength: 100 }
+                instructions: { type: string, minLength: 1, maxLength: 8000 }
+                historySize: { type: integer, minimum: 5, maximum: 50 }
+                isActive: { type: boolean }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AiAgent' } } } }
+        '404': { description: Não encontrado, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { description: Validação, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    delete:
+      summary: (admin) Exclui. 409 AGENT_IN_USE se um fluxo ativo usa o agente.
+      responses:
+        '204': { description: Excluído }
+        '409': { description: Em uso, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  # ---------- Fluxos ----------
+  /flows:
+    get:
+      summary: >
+        Lista fluxos. Admin vê todos. Atendente só pode pedir trigger=manual&status=active
+        (menu de disparo do chat); outros filtros → 403.
+      parameters:
+        - { in: query, name: status, schema: { $ref: '#/components/schemas/FlowStatus' } }
+        - { in: query, name: trigger, schema: { type: string, enum: [message_received, manual] } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/FlowSummary' } } } } }
+    post:
+      summary: (admin) Cria fluxo em rascunho, sem versão.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                description: { type: [string, 'null'], maxLength: 500 }
+      responses:
+        '201': { description: Criado, content: { application/json: { schema: { $ref: '#/components/schemas/Flow' } } } }
+        '409': { description: Nome já usado, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /flows/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      summary: (admin) Fluxo com o grafo da versão atual.
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Flow' } } } }
+        '404': { description: Não encontrado, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    patch:
+      summary: (admin) Renomeia, muda descrição ou prioridade (FR-008).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                description: { type: [string, 'null'], maxLength: 500 }
+                priority: { type: integer, minimum: 1, maximum: 1000 }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Flow' } } } }
+        '409': { description: Nome já usado, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    delete:
+      summary: (admin) Exclui fluxo draft/inactive com versões e execuções. 409 FLOW_ACTIVE se ativo.
+      responses:
+        '204': { description: Excluído }
+        '409': { description: Fluxo ativo, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /flows/{id}/graph:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    put:
+      summary: >
+        (admin) Salva o grafo como nova versão (FR-007). Fluxo ativo exige grafo válido
+        (422 INVALID_FLOW com issues); rascunho/inativo aceita grafo incompleto que respeite o schema.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/FlowGraph' } } }
+      responses:
+        '200': { description: Nova versão salva, content: { application/json: { schema: { $ref: '#/components/schemas/Flow' } } } }
+        '422': { description: Grafo inválido, content: { application/json: { schema: { $ref: '#/components/schemas/InvalidFlowError' } } } }
+
+  /flows/{id}/activate:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      summary: (admin) Valida a versão atual e ativa (FR-005, FR-006).
+      responses:
+        '200': { description: Ativado, content: { application/json: { schema: { $ref: '#/components/schemas/Flow' } } } }
+        '422': { description: Grafo inválido ou sem versão, content: { application/json: { schema: { $ref: '#/components/schemas/InvalidFlowError' } } } }
+
+  /flows/{id}/deactivate:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      summary: (admin) Desativa e cancela as execuções ativas do fluxo.
+      responses:
+        '200': { description: Desativado, content: { application/json: { schema: { $ref: '#/components/schemas/Flow' } } } }
+
+  /flows/{id}/duplicate:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      summary: (admin) Copia o fluxo como rascunho "<nome> (cópia)" com o grafo da versão atual.
+      responses:
+        '201': { description: Criado, content: { application/json: { schema: { $ref: '#/components/schemas/Flow' } } } }
+
+  /flows/{id}/test:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      summary: >
+        (admin) Salva o grafo enviado como versão e roda em modo teste no número informado,
+        ignorando status e prioridade (FR-014). Grafo precisa ser válido (422 INVALID_FLOW).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [graph, phone]
+              properties:
+                graph: { $ref: '#/components/schemas/FlowGraph' }
+                phone: { $ref: '#/components/schemas/Phone' }
+      responses:
+        '201': { description: Execução criada, content: { application/json: { schema: { $ref: '#/components/schemas/RunSummary' } } } }
+        '409': { description: 'RUN_ALREADY_ACTIVE ou WHATSAPP_DISCONNECTED', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { description: Grafo inválido, content: { application/json: { schema: { $ref: '#/components/schemas/InvalidFlowError' } } } }
+
+  /flows/{id}/runs:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      summary: (admin) Histórico de execuções, mais recentes primeiro (US5).
+      parameters:
+        - { in: query, name: status, schema: { $ref: '#/components/schemas/RunStatus' } }
+        - { in: query, name: cursor, schema: { type: string } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/RunSummary' } }
+                  nextCursor: { type: [string, 'null'] }
+
+  /flow-assets:
+    post:
+      summary: (admin) Upload de imagem/documento para o bloco send_media. Mesmos tipos e limites do chat.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201':
+          description: Salvo
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [mediaPath, mime, filename, size]
+                properties:
+                  mediaPath: { type: string, example: automation/2f1c…/tabela.pdf }
+                  mime: { type: string }
+                  filename: { type: string }
+                  size: { type: integer }
+        '413': { description: Arquivo grande demais, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '415': { description: Tipo não suportado, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /flow-assets/{path}:
+    get:
+      summary: (admin) Baixa o arquivo para pré-visualização no editor.
+      parameters:
+        - { in: path, name: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Arquivo }
+        '404': { description: Não encontrado, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  # ---------- Execuções ----------
+  /runs/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      summary: Execução com passos. Atendentes também acessam (execuções das conversas que abrem).
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RunDetail' } } } }
+        '404': { description: Não encontrada, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /runs/{id}/cancel:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      summary: Para uma execução ativa ("parar" no chat, US4-2). end_reason = stopped_by_user.
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/RunSummary' } } } }
+        '409': { description: Já terminou (RUN_FINISHED), content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  # ---------- Chat: disparo e atendimento ----------
+  /conversations:
+    get:
+      summary: >
+        Igual à feature 001, com o filtro novo `handling`. `awaiting_human` = modo humano sem
+        ninguém assumido (FR-023).
+      parameters:
+        - { in: query, name: search, schema: { type: string, maxLength: 100 } }
+        - { in: query, name: unread, schema: { type: boolean } }
+        - { in: query, name: handling, schema: { type: string, enum: [awaiting_human] } }
+        - { in: query, name: cursor, schema: { type: string } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Conversation' } }
+                  nextCursor: { type: [string, 'null'] }
+
+  /conversations/{id}/runs:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    get:
+      summary: Execuções da conversa, mais recentes primeiro (até 20). A ativa, se houver, vem primeiro.
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/RunSummary' } } } } }
+
+  /conversations/{id}/start-flow:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      summary: Dispara um fluxo ativo de gatilho manual na conversa (FR-026). Coloca a conversa em modo automação.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [flowId]
+              properties:
+                flowId: { type: string, format: uuid }
+      responses:
+        '201': { description: Execução criada, content: { application/json: { schema: { $ref: '#/components/schemas/RunSummary' } } } }
+        '409': { description: 'RUN_ALREADY_ACTIVE, CONTACT_OPTED_OUT ou WHATSAPP_DISCONNECTED', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { description: 'Fluxo não é manual ou não está ativo (FLOW_NOT_STARTABLE)', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /conversations/start-flow:
+    post:
+      summary: Cria (ou reaproveita) a conversa com um número e dispara o fluxo (FR-027).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, flowId]
+              properties:
+                phone: { $ref: '#/components/schemas/Phone' }
+                flowId: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Execução criada
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [conversation, run]
+                properties:
+                  conversation: { $ref: '#/components/schemas/Conversation' }
+                  run: { $ref: '#/components/schemas/RunSummary' }
+        '409': { description: Igual ao disparo em conversa existente, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { description: 'Número inválido ou fora do WhatsApp (PHONE_NOT_ON_WHATSAPP)', content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /conversations/{id}/assume:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      summary: Atendente assume. Cancela a execução ativa, modo humano, assumedBy = usuário (FR-022).
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Conversation' } } } }
+
+  /conversations/{id}/release:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      summary: Devolve para automação; limpa handoff e assumedBy (FR-025).
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Conversation' } } } }
+
+  /contacts/{id}/automation-opt-out:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    put:
+      summary: Marca o contato como "não automatizar" e cancela execução ativa (FR-028).
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Conversation' } } } }
+    delete:
+      summary: Desfaz a marcação.
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Conversation' } } } }
+
+components:
+  securitySchemes:
+    session: { type: apiKey, in: cookie, name: v4_session }
+
+  parameters:
+    Id: { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+
+    InvalidFlowError:
+      allOf:
+        - { $ref: '#/components/schemas/Error' }
+        - type: object
+          required: [issues]
+          properties:
+            issues:
+              type: array
+              items:
+                type: object
+                required: [message]
+                properties:
+                  nodeId: { type: string }
+                  edgeId: { type: string }
+                  message: { type: string }
+
+    Phone:
+      type: string
+      description: Só dígitos com DDI, ex. 5511999999999.
+      pattern: '^\d{10,15}$'
+
+    AiVendor: { type: string, enum: [openai, anthropic, gemini] }
+
+    AiProvider:
+      type: object
+      required: [id, name, vendor, keyHint, availableModels, lastTestedAt, agentCount]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        vendor: { $ref: '#/components/schemas/AiVendor' }
+        keyHint: { type: string, example: '…a9F2' }
+        availableModels: { type: array, items: { type: string } }
+        lastTestedAt: { type: string, format: date-time }
+        agentCount: { type: integer }
+
+    AiAgentInput:
+      type: object
+      required: [name, providerId, model, instructions]
+      properties:
+        name: { type: string, minLength: 2, maxLength: 60 }
+        providerId: { type: string, format: uuid }
+        model: { type: string, minLength: 1, maxLength: 100 }
+        instructions: { type: string, minLength: 1, maxLength: 8000 }
+        historySize: { type: integer, minimum: 5, maximum: 50, default: 20 }
+
+    AiAgent:
+      type: object
+      required: [id, name, provider, model, instructions, historySize, isActive, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        provider: { type: object, required: [id, name, vendor], properties: { id: { type: string }, name: { type: string }, vendor: { $ref: '#/components/schemas/AiVendor' } } }
+        model: { type: string }
+        instructions: { type: string }
+        historySize: { type: integer }
+        isActive: { type: boolean }
+        updatedAt: { type: string, format: date-time }
+
+    FlowStatus: { type: string, enum: [draft, active, inactive] }
+
+    FlowSummary:
+      type: object
+      required: [id, name, description, status, trigger, priority, versionNumber, updatedAt, lastRunAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: [string, 'null'] }
+        status: { $ref: '#/components/schemas/FlowStatus' }
+        trigger: { type: [string, 'null'], enum: [message_received, manual, null] }
+        priority: { type: integer }
+        versionNumber: { type: [integer, 'null'] }
+        updatedAt: { type: string, format: date-time }
+        lastRunAt: { type: [string, 'null'], format: date-time }
+
+    Flow:
+      allOf:
+        - { $ref: '#/components/schemas/FlowSummary' }
+        - type: object
+          required: [graph]
+          properties:
+            graph:
+              oneOf: [{ $ref: '#/components/schemas/FlowGraph' }, { type: 'null' }]
+
+    FlowGraph:
+      type: object
+      description: Formato e tipos de bloco em flow-graph.md.
+      required: [nodes, edges]
+      properties:
+        nodes:
+          type: array
+          maxItems: 200
+          items:
+            type: object
+            required: [id, type, position, config]
+            properties:
+              id: { type: string, pattern: '^[A-Za-z0-9_-]{1,40}$' }
+              type:
+                type: string
+                enum: [trigger.message_received, trigger.manual, send_text, send_media, wait, wait_reply, condition, ai_agent, handoff, end]
+              position: { type: object, required: [x, y], properties: { x: { type: number }, y: { type: number } } }
+              config: { type: object }
+        edges:
+          type: array
+          maxItems: 400
+          items:
+            type: object
+            required: [id, source, sourceHandle, target]
+            properties:
+              id: { type: string, pattern: '^[A-Za-z0-9_-]{1,40}$' }
+              source: { type: string }
+              sourceHandle: { type: string }
+              target: { type: string }
+
+    RunStatus: { type: string, enum: [running, waiting, completed, failed, cancelled] }
+
+    RunSummary:
+      type: object
+      required: [id, flowId, flowName, versionNumber, conversationId, contact, origin, status, currentNodeId, isTest, startedAt, finishedAt, endReason, error]
+      properties:
+        id: { type: string, format: uuid }
+        flowId: { type: string, format: uuid }
+        flowName: { type: string }
+        versionNumber: { type: integer }
+        conversationId: { type: string, format: uuid }
+        contact: { type: object, required: [name, phone], properties: { name: { type: [string, 'null'] }, phone: { type: string } } }
+        origin: { type: string, enum: [message_received, manual, test] }
+        status: { $ref: '#/components/schemas/RunStatus' }
+        currentNodeId: { type: [string, 'null'] }
+        isTest: { type: boolean }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: [string, 'null'], format: date-time }
+        endReason: { type: [string, 'null'], enum: [completed, handoff, opt_out, flow_deactivated, stopped_by_user, loop_limit, error, null] }
+        error: { type: [string, 'null'] }
+
+    RunDetail:
+      allOf:
+        - { $ref: '#/components/schemas/RunSummary' }
+        - type: object
+          required: [graph, steps]
+          properties:
+            graph: { $ref: '#/components/schemas/FlowGraph' }
+            steps:
+              type: array
+              items:
+                type: object
+                required: [id, nodeId, nodeType, status, input, output, error, startedAt, finishedAt]
+                properties:
+                  id: { type: string, format: uuid }
+                  nodeId: { type: string }
+                  nodeType: { type: string }
+                  status: { type: string, enum: [ok, failed] }
+                  input: {}
+                  output: {}
+                  error: { type: [string, 'null'] }
+                  startedAt: { type: string, format: date-time }
+                  finishedAt: { type: [string, 'null'], format: date-time }
+
+    Handling:
+      type: object
+      description: Modo de atendimento da conversa (FR-021..FR-025).
+      required: [mode, reason, summary, handoffAt, assumedBy]
+      properties:
+        mode: { type: string, enum: [automation, human] }
+        reason: { type: [string, 'null'] }
+        summary: { type: [string, 'null'] }
+        handoffAt: { type: [string, 'null'], format: date-time }
+        assumedBy:
+          oneOf:
+            - { type: 'null' }
+            - { type: object, required: [id, name], properties: { id: { type: string }, name: { type: string } } }
+
+    Conversation:
+      description: Conversation da feature 001 com os campos novos.
+      type: object
+      required: [id, contact, lastMessageAt, lastMessagePreview, unreadCount, handling, automationOptOut]
+      properties:
+        id: { type: string, format: uuid }
+        contact: { type: object }
+        lastMessageAt: { type: [string, 'null'], format: date-time }
+        lastMessagePreview: { type: [string, 'null'] }
+        unreadCount: { type: integer }
+        handling: { $ref: '#/components/schemas/Handling' }
+        automationOptOut: { type: boolean }
+
+    MessageAutomation:
+      description: Campo novo `automation` do Message da feature 001 (FR-010).
+      oneOf:
+        - { type: 'null' }
+        - type: object
+          required: [kind, name]
+          properties:
+            kind: { type: string, enum: [flow, agent] }
+            name: { type: string }

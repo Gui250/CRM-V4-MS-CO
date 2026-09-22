@@ -1,0 +1,538 @@
+openapi: 3.1.0
+info:
+  title: V4 Company MS&CO CRM API — Relatórios de BI
+  version: 0.1.0
+  description: >
+    Endpoints da feature 004, somados aos da feature 001 (mesmo servidor /api, mesmo cookie
+    `v4_session`, mesmo schema de erro). Respostas em camelCase, montadas em controllers/dto.ts.
+    Estrutura de `ReportDefinition` e `QueryRequest`: ver report-definition.md.
+servers:
+  - url: /api
+security:
+  - session: []
+
+paths:
+  # ---------------------------------------------------------------- fontes
+  /bi/sources:
+    get:
+      summary: Lista fontes internas e externas visíveis (todas para qualquer usuário ativo).
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Source' } }
+    post:
+      summary: Cria fonte externa (admin). Grava e dispara a primeira captura.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SourceInput' }
+      responses:
+        '201':
+          description: Criada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Source' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { description: 'SOURCE_NAME_TAKEN', $ref: '#/components/responses/Error' }
+        '422': { description: 'VALIDATION_ERROR | QUERY_NOT_READ_ONLY | HOST_NOT_ALLOWED', $ref: '#/components/responses/Error' }
+
+  /bi/sources/preview:
+    post:
+      summary: >
+        Testa a conexão e devolve prévia (até 50 linhas) sem gravar nada (admin, FR-025).
+        Para `spreadsheet_file`, envie antes o arquivo em /bi/uploads e use o `storagePath` devolvido.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - { $ref: '#/components/schemas/SourceInput' }
+                - type: object
+                  properties:
+                    sourceId: { type: string, format: uuid, description: 'Ao editar: reaproveita segredos salvos quando omitidos' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Preview' }
+        '422':
+          description: >
+            CONNECTION_FAILED | AUTH_FAILED | HOST_NOT_ALLOWED | QUERY_NOT_READ_ONLY | TIMEOUT |
+            ITEMS_PATH_NOT_FOUND | FILE_TOO_LARGE | TOO_MANY_ROWS, com mensagem pt-BR específica.
+          $ref: '#/components/responses/Error'
+
+  /bi/uploads:
+    post:
+      summary: Envia planilha (.csv, .xlsx) até 50 MB (admin). Devolve abas encontradas.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [storagePath, originalFilename, sheets]
+                properties:
+                  storagePath: { type: string }
+                  originalFilename: { type: string }
+                  sheets: { type: array, items: { type: string }, description: 'Vazio para CSV' }
+        '413': { description: FILE_TOO_LARGE, $ref: '#/components/responses/Error' }
+        '415': { description: UNSUPPORTED_FILE, $ref: '#/components/responses/Error' }
+
+  /bi/sources/{sourceId}:
+    parameters:
+      - { name: sourceId, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Detalhe da fonte (segredos mascarados).
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Source' }
+        '404': { $ref: '#/components/responses/Error' }
+    patch:
+      summary: >
+        Edita nome, configuração, segredos (vazio = mantém), agenda ou tipos de campo (admin).
+        Mudança de configuração ou de tipo dispara nova captura.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                config: { type: object }
+                secrets: { type: object }
+                refreshInterval: { $ref: '#/components/schemas/RefreshInterval' }
+                fieldTypes:
+                  type: object
+                  additionalProperties: { $ref: '#/components/schemas/FieldType' }
+                  description: 'key do campo → tipo corrigido (FR-010)'
+                fieldLabels: { type: object, additionalProperties: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Source' }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+    delete:
+      summary: Exclui fonte externa (admin). Bloqueada se usada por relatórios (FR-031).
+      responses:
+        '204': { description: Excluída }
+        '409':
+          description: SOURCE_IN_USE; `details.reports` lista `{ id, name }` dos relatórios dependentes.
+          $ref: '#/components/responses/Error'
+
+  /bi/sources/{sourceId}/refresh:
+    post:
+      summary: Atualização manual (admin). Assíncrona; acompanhe por GET da fonte.
+      parameters:
+        - { name: sourceId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '202': { description: Captura iniciada }
+        '409': { description: REFRESH_IN_PROGRESS, $ref: '#/components/responses/Error' }
+
+  /bi/relationships:
+    get:
+      summary: Lista relacionamentos entre fontes.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Relationship' } }
+    post:
+      summary: Cria relacionamento (admin, FR-030).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [leftSourceId, leftField, rightSourceId, rightField]
+              properties:
+                leftSourceId: { type: string }
+                leftField: { type: string }
+                rightSourceId: { type: string }
+                rightField: { type: string }
+      responses:
+        '201':
+          description: Criado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Relationship' }
+        '409': { description: RELATIONSHIP_EXISTS, $ref: '#/components/responses/Error' }
+        '422': { description: INCOMPATIBLE_FIELDS, $ref: '#/components/responses/Error' }
+
+  /bi/relationships/{relationshipId}:
+    delete:
+      summary: Remove relacionamento (admin).
+      parameters:
+        - { name: relationshipId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Removido }
+
+  # ---------------------------------------------------------------- consulta
+  /bi/query:
+    post:
+      summary: >
+        Executa a consulta de um componente (agregada). Usado por todos os gráficos, cartões,
+        tabelas e tabelas dinâmicas. Timeout 30 s.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/QueryRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QueryResult' }
+        '404': { description: SOURCE_NOT_FOUND, $ref: '#/components/responses/Error' }
+        '422': { description: 'UNKNOWN_FIELD | INVALID_EXPRESSION | VALIDATION_ERROR', $ref: '#/components/responses/Error' }
+        '504': { description: QUERY_TIMEOUT, $ref: '#/components/responses/Error' }
+
+  /bi/rows:
+    post:
+      summary: '"Ver dados" (FR-020): linhas que compõem um valor, paginadas (100 por página).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sourceId]
+              properties:
+                sourceId: { type: string }
+                filters: { type: array, items: { $ref: '#/components/schemas/Filter' } }
+                calculatedFields: { type: array, items: { type: object } }
+                page: { type: integer, minimum: 1, default: 1 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [columns, rows, total]
+                properties:
+                  columns: { type: array, items: { $ref: '#/components/schemas/Column' } }
+                  rows: { type: array, items: { type: array, items: {} } }
+                  total: { type: integer }
+
+  /bi/rows.csv:
+    post:
+      summary: Mesmo corpo de /bi/rows sem `page`; devolve CSV (UTF-8 com BOM, separador `;`), até 500.000 linhas.
+      responses:
+        '200':
+          description: Arquivo
+          content:
+            text/csv: { schema: { type: string } }
+
+  /bi/suggest:
+    post:
+      summary: '"Gerar relatório sugerido" (FR-012): devolve uma página pronta para a fonte.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sourceId]
+              properties:
+                sourceId: { type: string }
+      responses:
+        '200':
+          description: OK. Página no formato ReportDefinition.pages[n].
+          content:
+            application/json:
+              schema: { type: object }
+
+  # ---------------------------------------------------------------- relatórios
+  /bi/reports:
+    get:
+      summary: Relatórios próprios e compartilhados com o usuário (admin vê todos).
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/ReportSummary' } }
+    post:
+      summary: Cria relatório (vazio, a partir de modelo ou duplicando outro).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                templateId: { type: string, enum: [whatsapp_attendance] }
+                duplicateOf: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Criado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Report' }
+
+  /bi/reports/{reportId}:
+    parameters:
+      - { name: reportId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: Relatório completo com a permissão do usuário.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Report' }
+        '404': { $ref: '#/components/responses/Error' }
+    put:
+      summary: Salva o relatório inteiro (editar). Versão divergente → 409 salvo `force`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, definition, version]
+              properties:
+                name: { type: string }
+                definition: { type: object, description: ReportDefinition }
+                version: { type: integer }
+                force: { type: boolean, default: false }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Report' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409':
+          description: REPORT_CONFLICT; `details` traz `{ version, updatedAt, updatedByName }` atuais.
+          $ref: '#/components/responses/Error'
+        '422': { $ref: '#/components/responses/Error' }
+    delete:
+      summary: Exclui (dono ou admin).
+      responses:
+        '204': { description: Excluído }
+
+  /bi/reports/{reportId}/shares:
+    parameters:
+      - { name: reportId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: Compartilhamentos (dono ou admin).
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Share' } }
+    put:
+      summary: Substitui a lista de compartilhamentos (dono ou admin, FR-032).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                required: [userId, permission]
+                properties:
+                  userId: { type: string, format: uuid }
+                  permission: { $ref: '#/components/schemas/SharePermission' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Share' } }
+
+components:
+  securitySchemes:
+    session: { type: apiKey, in: cookie, name: v4_session }
+
+  responses:
+    Error:
+      description: Erro
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [code, message]
+            properties:
+              code: { type: string }
+              message: { type: string }
+              details: {}
+
+  schemas:
+    FieldType: { type: string, enum: [text, number, currency, date, datetime, boolean] }
+    RefreshInterval: { type: string, enum: [manual, 15m, 1h, 6h, 24h] }
+    SourceKind: { type: string, enum: [internal, spreadsheet_file, spreadsheet_url, postgres, mysql, api] }
+    SharePermission: { type: string, enum: [edit, view] }
+
+    Field:
+      type: object
+      required: [key, label, type, detectedType, invalidCount]
+      properties:
+        key: { type: string }
+        label: { type: string }
+        type: { $ref: '#/components/schemas/FieldType' }
+        detectedType: { $ref: '#/components/schemas/FieldType' }
+        invalidCount: { type: integer }
+
+    Column:
+      type: object
+      required: [key, label, type]
+      properties:
+        key: { type: string }
+        label: { type: string }
+        type: { $ref: '#/components/schemas/FieldType' }
+
+    Source:
+      type: object
+      required: [id, name, kind, fields, refreshInterval]
+      properties:
+        id: { type: string, description: 'uuid ou internal:<nome>' }
+        name: { type: string }
+        kind: { $ref: '#/components/schemas/SourceKind' }
+        config: { type: object, description: 'Só admins; sem segredos' }
+        maskedSecrets: { type: object, description: 'Ex.: { "password": "••••a1b2" }' }
+        fields: { type: array, items: { $ref: '#/components/schemas/Field' } }
+        refreshInterval: { $ref: '#/components/schemas/RefreshInterval' }
+        rowCount: { type: integer }
+        lastRefreshedAt: { type: [string, 'null'], format: date-time }
+        lastAttemptAt: { type: [string, 'null'], format: date-time }
+        lastError: { type: [string, 'null'] }
+        isRefreshing: { type: boolean }
+
+    SourceInput:
+      type: object
+      required: [name, kind, config]
+      properties:
+        name: { type: string, minLength: 2, maxLength: 100 }
+        kind: { type: string, enum: [spreadsheet_file, spreadsheet_url, postgres, mysql, api] }
+        config: { type: object, description: 'Por tipo: data-model.md § bi_sources' }
+        secrets: { type: object }
+        refreshInterval: { $ref: '#/components/schemas/RefreshInterval' }
+
+    Preview:
+      type: object
+      required: [fields, rows, totalRowsRead]
+      properties:
+        fields: { type: array, items: { $ref: '#/components/schemas/Field' } }
+        rows: { type: array, maxItems: 50, items: { type: array, items: {} } }
+        totalRowsRead: { type: integer }
+        sheets: { type: array, items: { type: string } }
+
+    Relationship:
+      type: object
+      required: [id, leftSourceId, leftField, rightSourceId, rightField]
+      properties:
+        id: { type: string, format: uuid }
+        leftSourceId: { type: string }
+        leftField: { type: string }
+        rightSourceId: { type: string }
+        rightField: { type: string }
+
+    Filter:
+      type: object
+      required: [sourceId, field, op]
+      properties:
+        sourceId: { type: string }
+        field: { type: string }
+        op: { type: string, enum: [in, not_in, between, gte, lte, is_null, not_null] }
+        values: { type: array, items: {} }
+
+    QueryRequest:
+      type: object
+      description: Ver report-definition.md § Consulta.
+      required: [sourceId]
+      properties:
+        sourceId: { type: string }
+        dimensions:
+          type: array
+          maxItems: 2
+          items:
+            type: object
+            required: [sourceId, field]
+            properties:
+              sourceId: { type: string }
+              field: { type: string }
+              dateGrain: { type: string, enum: [day, week, month, quarter, year] }
+        measures:
+          type: array
+          maxItems: 5
+          items:
+            type: object
+            required: [sourceId, field]
+            properties:
+              sourceId: { type: string }
+              field: { type: string, description: 'Chave do campo, ou "calc:<id>" para campo calculado' }
+              aggregation: { type: string, enum: [sum, avg, count, count_distinct, min, max] }
+        filters: { type: array, items: { $ref: '#/components/schemas/Filter' } }
+        calculatedFields: { type: array, items: { type: object } }
+        sort: { type: object, properties: { by: { enum: [value, category] }, dir: { enum: [asc, desc] } } }
+        limit: { type: integer, minimum: 1, maximum: 1000, default: 20 }
+        groupOthers: { type: boolean, default: true }
+
+    QueryResult:
+      type: object
+      required: [columns, rows, dataAsOf]
+      properties:
+        columns: { type: array, items: { $ref: '#/components/schemas/Column' } }
+        rows: { type: array, items: { type: array, items: {} } }
+        ignoredRows: { type: integer, description: 'Linhas com valor inválido nos campos usados' }
+        dataAsOf: { type: string, format: date-time, description: 'Captura usada; agora para fontes internas' }
+        staleWarning: { type: [string, 'null'], description: '"dados de <data>; última atualização falhou"' }
+        missingFields: { type: array, items: { type: string } }
+
+    ReportSummary:
+      type: object
+      required: [id, name, ownerName, permission, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        ownerName: { type: string }
+        permission: { type: string, enum: [owner, edit, view] }
+        updatedAt: { type: string, format: date-time }
+
+    Report:
+      allOf:
+        - { $ref: '#/components/schemas/ReportSummary' }
+        - type: object
+          required: [definition, version]
+          properties:
+            definition: { type: object, description: ReportDefinition }
+            version: { type: integer }
+
+    Share:
+      type: object
+      required: [userId, userName, permission]
+      properties:
+        userId: { type: string, format: uuid }
+        userName: { type: string }
+        permission: { $ref: '#/components/schemas/SharePermission' }

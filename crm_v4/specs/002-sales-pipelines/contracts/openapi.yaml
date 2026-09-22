@@ -1,0 +1,377 @@
+openapi: 3.1.0
+info:
+  title: V4 Company MS&CO CRM API — Funis e Pipelines
+  version: 0.2.0
+  description: >
+    Endpoints novos da feature 002. Mesmas convenções da 001
+    (specs/001-whatsapp-chat-panel/contracts/openapi.yaml): servidos em /api, sessão pelo cookie
+    `v4_session`, erros no formato Error `{ code, message }`, validação → 422 VALIDATION_ERROR,
+    sem sessão → 401, sem papel admin → 403. Rotas marcadas "admin" exigem papel admin.
+servers:
+  - url: /api
+security:
+  - session: []
+
+paths:
+  /pipelines:
+    get:
+      summary: Lista funis (ativos; arquivados com includeArchived=true), com etapas ordenadas.
+      parameters:
+        - { name: includeArchived, in: query, schema: { type: boolean, default: false } }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Pipeline' } }
+    post:
+      summary: (admin) Cria funil com as etapas sugeridas.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 60 }
+      responses:
+        '201': { content: { application/json: { schema: { $ref: '#/components/schemas/Pipeline' } } } }
+        '409': { $ref: '#/components/responses/Error' } # PIPELINE_NAME_TAKEN
+
+  /pipelines/{pipelineId}:
+    parameters: [{ $ref: '#/components/parameters/pipelineId' }]
+    patch:
+      summary: (admin) Renomeia, marca/desmarca funil de entrada, arquiva ou reativa.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: { type: string, minLength: 1, maxLength: 60 }
+                isEntry: { type: boolean }
+                archived: { type: boolean }
+      responses:
+        '200': { content: { application/json: { schema: { $ref: '#/components/schemas/Pipeline' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' } # PIPELINE_NAME_TAKEN, PIPELINE_ARCHIVED (isEntry em arquivado)
+
+  /pipelines/{pipelineId}/board:
+    parameters: [{ $ref: '#/components/parameters/pipelineId' }]
+    get:
+      summary: Quadro do funil. Contagens e somas consideram todos os leads que batem com o filtro.
+      parameters:
+        - { $ref: '#/components/parameters/assignee' }
+        - { $ref: '#/components/parameters/search' }
+      responses:
+        '200': { content: { application/json: { schema: { $ref: '#/components/schemas/Board' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /pipelines/{pipelineId}/stages/{stageId}/leads:
+    parameters:
+      - { $ref: '#/components/parameters/pipelineId' }
+      - { $ref: '#/components/parameters/stageId' }
+    get:
+      summary: Próxima página de cartões de uma etapa (keyset em position, id).
+      parameters:
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { $ref: '#/components/parameters/assignee' }
+        - { $ref: '#/components/parameters/search' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Lead' } }
+                  nextCursor: { type: [string, 'null'] }
+
+  /pipelines/{pipelineId}/stages:
+    parameters: [{ $ref: '#/components/parameters/pipelineId' }]
+    post:
+      summary: (admin) Adiciona etapa no fim do funil.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 40 }
+                color: { $ref: '#/components/schemas/StageColor' }
+                kind: { $ref: '#/components/schemas/StageKind' }
+      responses:
+        '201': { content: { application/json: { schema: { $ref: '#/components/schemas/Stage' } } } }
+        '409': { $ref: '#/components/responses/Error' } # STAGE_NAME_TAKEN, STAGE_LIMIT
+
+  /pipelines/{pipelineId}/stages/order:
+    parameters: [{ $ref: '#/components/parameters/pipelineId' }]
+    put:
+      summary: (admin) Reordena etapas. A lista deve conter exatamente as etapas do funil.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stageIds]
+              properties:
+                stageIds: { type: array, items: { type: string, format: uuid }, minItems: 1, maxItems: 20 }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Stage' } }
+        '422': { $ref: '#/components/responses/Error' } # STAGE_ORDER_MISMATCH
+
+  /pipelines/{pipelineId}/stages/{stageId}:
+    parameters:
+      - { $ref: '#/components/parameters/pipelineId' }
+      - { $ref: '#/components/parameters/stageId' }
+    patch:
+      summary: (admin) Renomeia, recolore ou muda o tipo da etapa.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: { type: string, minLength: 1, maxLength: 40 }
+                color: { $ref: '#/components/schemas/StageColor' }
+                kind: { $ref: '#/components/schemas/StageKind' }
+      responses:
+        '200': { content: { application/json: { schema: { $ref: '#/components/schemas/Stage' } } } }
+        '409': { $ref: '#/components/responses/Error' } # STAGE_NAME_TAKEN
+    delete:
+      summary: (admin) Exclui etapa. Com leads, exige moveToStageId do mesmo funil.
+      parameters:
+        - { name: moveToStageId, in: query, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Excluída }
+        '409': { $ref: '#/components/responses/Error' } # STAGE_NOT_EMPTY, LAST_STAGE
+        '422': { $ref: '#/components/responses/Error' } # moveToStageId inválido
+
+  /leads:
+    get:
+      summary: Leads de um contato em funis ativos (cabeçalho da conversa no chat).
+      parameters:
+        - { name: contactId, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Lead' } }
+    post:
+      summary: Cria lead manualmente a partir de um contato. Sem stageId, usa a primeira etapa.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pipelineId, contactId]
+              properties:
+                pipelineId: { type: string, format: uuid }
+                contactId: { type: string, format: uuid }
+                stageId: { type: string, format: uuid }
+      responses:
+        '201': { content: { application/json: { schema: { $ref: '#/components/schemas/Lead' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' } # LEAD_EXISTS, PIPELINE_ARCHIVED
+
+  /leads/{leadId}:
+    parameters: [{ $ref: '#/components/parameters/leadId' }]
+    get:
+      summary: Detalhe do lead com histórico de etapas (mais recente primeiro).
+      responses:
+        '200': { content: { application/json: { schema: { $ref: '#/components/schemas/LeadDetail' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+    patch:
+      summary: Edita título, valor, responsável e anotações.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                title: { type: [string, 'null'], maxLength: 120 }
+                valueCents: { type: [integer, 'null'], minimum: 0 }
+                assigneeId: { type: [string, 'null'], format: uuid }
+                notes: { type: [string, 'null'], maxLength: 5000 }
+      responses:
+        '200': { content: { application/json: { schema: { $ref: '#/components/schemas/Lead' } } } }
+        '422': { $ref: '#/components/responses/Error' } # ASSIGNEE_INVALID (usuário inexistente ou não ativo)
+    delete:
+      summary: Exclui o lead e seu histórico. Contato e conversa não mudam.
+      responses:
+        '204': { description: Excluído }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /leads/{leadId}/move:
+    parameters: [{ $ref: '#/components/parameters/leadId' }]
+    post:
+      summary: >
+        Move o lead para uma etapa do mesmo funil (ou reordena na mesma etapa). beforeLeadId é o
+        cartão que ficará logo abaixo; null/ausente = fim da coluna. lostReason é obrigatório
+        quando a etapa destino é `lost`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stageId]
+              properties:
+                stageId: { type: string, format: uuid }
+                beforeLeadId: { type: [string, 'null'], format: uuid }
+                lostReason: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        '200': { content: { application/json: { schema: { $ref: '#/components/schemas/Lead' } } } }
+        '404': { $ref: '#/components/responses/Error' } # lead, etapa (ex.: excluída) ou beforeLeadId fora da etapa
+        '422': { $ref: '#/components/responses/Error' } # LOST_REASON_REQUIRED, STAGE_OTHER_PIPELINE
+
+  /users/assignable:
+    get:
+      summary: Usuários ativos que podem ser responsáveis por leads (qualquer usuário logado).
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/UserRef' }
+
+components:
+  securitySchemes:
+    session: { type: apiKey, in: cookie, name: v4_session }
+
+  parameters:
+    pipelineId: { name: pipelineId, in: path, required: true, schema: { type: string, format: uuid } }
+    stageId: { name: stageId, in: path, required: true, schema: { type: string, format: uuid } }
+    leadId: { name: leadId, in: path, required: true, schema: { type: string, format: uuid } }
+    assignee:
+      name: assignee
+      in: query
+      description: "`me`, `none` ou o id de um usuário."
+      schema: { type: string }
+    search:
+      name: search
+      in: query
+      description: Busca por nome ou número do contato, ou título do lead.
+      schema: { type: string, maxLength: 100 }
+
+  responses:
+    Error:
+      description: Erro
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [code, message]
+            properties:
+              code: { type: string }
+              message: { type: string, description: Mensagem em pt-BR para exibir ao usuário }
+
+  schemas:
+    StageKind: { type: string, enum: [open, won, lost] }
+    StageColor: { type: string, enum: [gray, red, orange, amber, green, teal, blue, violet] }
+
+    UserRef:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+
+    Stage:
+      type: object
+      required: [id, pipelineId, name, color, kind, position]
+      properties:
+        id: { type: string, format: uuid }
+        pipelineId: { type: string, format: uuid }
+        name: { type: string }
+        color: { $ref: '#/components/schemas/StageColor' }
+        kind: { $ref: '#/components/schemas/StageKind' }
+        position: { type: integer }
+
+    Pipeline:
+      type: object
+      required: [id, name, isEntry, archivedAt, stages]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        isEntry: { type: boolean }
+        archivedAt: { type: [string, 'null'], format: date-time }
+        stages: { type: array, items: { $ref: '#/components/schemas/Stage' } }
+
+    Lead:
+      type: object
+      required: [id, pipelineId, stageId, position, title, valueCents, assignee, lostReason, stageEnteredAt, createdAt, contact, conversationId, unreadCount]
+      properties:
+        id: { type: string, format: uuid }
+        pipelineId: { type: string, format: uuid }
+        stageId: { type: string, format: uuid }
+        position: { type: number }
+        title: { type: [string, 'null'] }
+        valueCents: { type: [integer, 'null'] }
+        assignee: { oneOf: [{ $ref: '#/components/schemas/UserRef' }, { type: 'null' }] }
+        lostReason: { type: [string, 'null'] }
+        stageEnteredAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        contact:
+          type: object
+          required: [id, phone, name, avatarUrl]
+          properties:
+            id: { type: string, format: uuid }
+            phone: { type: string }
+            name: { type: [string, 'null'] }
+            avatarUrl: { type: [string, 'null'] }
+        conversationId: { type: [string, 'null'], format: uuid }
+        unreadCount: { type: integer, minimum: 0 }
+
+    LeadDetail:
+      allOf:
+        - { $ref: '#/components/schemas/Lead' }
+        - type: object
+          required: [notes, history]
+          properties:
+            notes: { type: [string, 'null'] }
+            history:
+              type: array
+              items:
+                type: object
+                required: [id, fromStageName, toStageName, changedBy, changedAt]
+                properties:
+                  id: { type: string, format: uuid }
+                  fromStageName: { type: [string, 'null'], description: null = criação do lead }
+                  toStageName: { type: [string, 'null'] }
+                  changedBy: { oneOf: [{ $ref: '#/components/schemas/UserRef' }, { type: 'null' }], description: null = automático }
+                  changedAt: { type: string, format: date-time }
+
+    Board:
+      type: object
+      required: [pipeline, stages]
+      properties:
+        pipeline: { $ref: '#/components/schemas/Pipeline' }
+        stages:
+          type: array
+          items:
+            allOf:
+              - { $ref: '#/components/schemas/Stage' }
+              - type: object
+                required: [leadCount, valueTotalCents, leads, nextCursor]
+                properties:
+                  leadCount: { type: integer }
+                  valueTotalCents: { type: integer }
+                  leads: { type: array, maxItems: 50, items: { $ref: '#/components/schemas/Lead' } }
+                  nextCursor: { type: [string, 'null'] }

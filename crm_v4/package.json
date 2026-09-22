@@ -1,0 +1,21 @@
+{
+  "name": "crm-v4-msco",
+  "private": true,
+  "workspaces": ["backend", "frontend"],
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c red,white \"npm run dev -w backend\" \"npm run dev -w frontend\"",
+    "test": "npm run test --workspaces",
+    "test:coverage": "npm run test:coverage --workspaces",
+    "lint": "eslint .",
+    "typecheck": "npm run typecheck --workspaces",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.5",
+    "eslint": "^9.39.0",
+    "prettier": "^3.9.8",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.70.1"
+  }
+}

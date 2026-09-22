@@ -1,0 +1,47 @@
+/* Report export (FR-033): the PDF is the browser's print of the current report page. */
+
+.bi-exporting .bi-export-header {
+  display: block !important;
+}
+
+@media print {
+  @page {
+    size: landscape;
+    margin: 10mm;
+  }
+
+  aside,
+  nav,
+  .bi-no-print {
+    display: none !important;
+  }
+
+  /* The panel is a fixed-height app shell with scroll areas; let the report flow onto the sheet. */
+  html,
+  body,
+  main,
+  .h-dvh,
+  .bi-scroll {
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  .bi-export-header {
+    display: block !important;
+  }
+
+  .bi-page {
+    background: #fff !important;
+    padding: 0 !important;
+    break-after: page;
+  }
+
+  .bi-page section {
+    break-inside: avoid;
+  }
+
+  .react-resizable-handle {
+    display: none !important;
+  }
+}

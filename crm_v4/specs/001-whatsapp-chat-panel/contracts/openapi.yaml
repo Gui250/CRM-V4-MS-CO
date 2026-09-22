@@ -1,0 +1,366 @@
+openapi: 3.1.0
+info:
+  title: V4 Company MS&CO CRM API
+  version: 0.1.0
+  description: >
+    API REST do backend Fastify. Servida em /api na mesma origem do frontend (rewrite do Next.js).
+    Autenticação por cookie de sessão `v4_session` (httpOnly). Erros seguem o schema Error.
+servers:
+  - url: /api
+security:
+  - session: []
+
+paths:
+  /auth/signup:
+    post:
+      summary: Cadastro. Primeiro usuário vira admin ativo; demais ficam pending.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password]
+              properties:
+                name: { type: string, minLength: 2, maxLength: 100 }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8, maxLength: 128 }
+      responses:
+        '201':
+          description: Criado. Se status=active, também define o cookie de sessão.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+
+  /auth/login:
+    post:
+      summary: Login. Define cookie de sessão.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { description: Credenciais inválidas (mensagem genérica) }
+        '403': { description: Conta pending ou disabled (code ACCOUNT_PENDING | ACCOUNT_DISABLED) }
+        '429': { $ref: '#/components/responses/Error' }
+
+  /auth/logout:
+    post:
+      summary: Encerra a sessão atual e limpa o cookie.
+      responses:
+        '204': { description: OK }
+
+  /auth/me:
+    get:
+      summary: Usuário da sessão atual.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Error' }
+
+  /users:
+    get:
+      summary: Lista usuários (admin).
+      parameters:
+        - in: query
+          name: status
+          schema: { $ref: '#/components/schemas/UserStatus' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/User' }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /users/{id}:
+    patch:
+      summary: Aprova/desativa usuário ou muda papel (admin).
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                status: { $ref: '#/components/schemas/UserStatus' }
+                role: { $ref: '#/components/schemas/UserRole' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { description: Violaria a regra do último admin ativo (code LAST_ADMIN) }
+
+  /connection:
+    get:
+      summary: Status da conexão do WhatsApp.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Connection' }
+
+  /connection/connect:
+    post:
+      summary: Inicia conexão (cria instância se preciso, configura webhook, pede QR). Admin.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Connection' }
+        '403': { $ref: '#/components/responses/Error' }
+        '502': { description: Evolution API indisponível (code EVOLUTION_UNAVAILABLE) }
+
+  /connection/logout:
+    post:
+      summary: Desconecta o número. Admin.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Connection' }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /conversations:
+    get:
+      summary: Lista conversas ordenadas por last_message_at desc, paginação por cursor.
+      parameters:
+        - { in: query, name: search, schema: { type: string, maxLength: 100 } }
+        - { in: query, name: unread, schema: { type: boolean } }
+        - { in: query, name: cursor, schema: { type: string } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Conversation' }
+                  nextCursor: { type: [string, 'null'] }
+
+  /conversations/{id}/messages:
+    get:
+      summary: Histórico, mais recentes primeiro; cursor busca as mais antigas.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+        - { in: query, name: cursor, schema: { type: string } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Message' }
+                  nextCursor: { type: [string, 'null'] }
+        '404': { $ref: '#/components/responses/Error' }
+    post:
+      summary: Envia mensagem. JSON para texto; multipart para mídia (image|document).
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, minLength: 1, maxLength: 4096 }
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+                caption: { type: string, maxLength: 1024 }
+      responses:
+        '202':
+          description: Aceita com status pending; status final chega por SSE (message.updated).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        '409': { description: WhatsApp desconectado (code WHATSAPP_DISCONNECTED) }
+        '413': { description: Arquivo acima do limite }
+        '415': { description: Tipo de arquivo não suportado }
+
+  /conversations/{id}/read:
+    post:
+      summary: Marca como lida (zera unread_count e envia read receipt ao WhatsApp).
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: OK }
+
+  /messages/{id}/retry:
+    post:
+      summary: Reenvia mensagem com status failed.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '202':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        '409': { description: Mensagem não está failed (code NOT_RETRYABLE) }
+
+  /messages/{id}/media:
+    get:
+      summary: Stream do arquivo de mídia da mensagem.
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Conteúdo binário com Content-Type = media_mime.
+        '404': { $ref: '#/components/responses/Error' }
+
+  /events:
+    get:
+      summary: Stream Server-Sent Events. Ver contracts/sse-events.md.
+      responses:
+        '200':
+          description: OK
+          content:
+            text/event-stream: {}
+
+  /webhooks/evolution:
+    post:
+      summary: Recebe eventos da Evolution API. Ver contracts/evolution-webhook.md.
+      security: []
+      parameters:
+        - { in: query, name: token, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Processado ou ignorado }
+        '401': { description: Token inválido }
+
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: v4_session
+
+  responses:
+    Error:
+      description: Erro
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: VALIDATION_ERROR }
+        message: { type: string, description: Mensagem em pt-BR para exibir ao usuário }
+        details: {}
+
+    UserRole: { type: string, enum: [admin, attendant] }
+    UserStatus: { type: string, enum: [pending, active, disabled] }
+
+    User:
+      type: object
+      required: [id, name, email, role, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string, format: email }
+        role: { $ref: '#/components/schemas/UserRole' }
+        status: { $ref: '#/components/schemas/UserStatus' }
+        createdAt: { type: string, format: date-time }
+
+    Connection:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [disconnected, awaiting_qr, connected] }
+        phoneNumber: { type: [string, 'null'] }
+        qrCode: { type: [string, 'null'], description: data URL base64, só em awaiting_qr }
+        lastConnectedAt: { type: [string, 'null'], format: date-time }
+
+    Contact:
+      type: object
+      required: [id, phone]
+      properties:
+        id: { type: string, format: uuid }
+        phone: { type: string }
+        name: { type: [string, 'null'] }
+        avatarUrl: { type: [string, 'null'] }
+
+    Conversation:
+      type: object
+      required: [id, contact, unreadCount]
+      properties:
+        id: { type: string, format: uuid }
+        contact: { $ref: '#/components/schemas/Contact' }
+        lastMessageAt: { type: [string, 'null'], format: date-time }
+        lastMessagePreview: { type: [string, 'null'] }
+        unreadCount: { type: integer, minimum: 0 }
+
+    Message:
+      type: object
+      required: [id, conversationId, direction, type, sentAt]
+      properties:
+        id: { type: string, format: uuid }
+        conversationId: { type: string, format: uuid }
+        direction: { type: string, enum: [inbound, outbound] }
+        type: { type: string, enum: [text, image, audio, video, document, unsupported] }
+        body: { type: [string, 'null'] }
+        media:
+          type: [object, 'null']
+          properties:
+            url: { type: string, description: '/api/messages/{id}/media' }
+            mime: { type: string }
+            filename: { type: [string, 'null'] }
+            size: { type: [integer, 'null'] }
+        status: { type: [string, 'null'], enum: [pending, sent, delivered, read, failed, null] }
+        sentBy:
+          type: [object, 'null']
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+        sentAt: { type: string, format: date-time }
+        error: { type: [string, 'null'] }
